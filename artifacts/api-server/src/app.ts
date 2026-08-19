@@ -25,7 +25,15 @@ app.use(
     },
   }),
 );
-app.use(cors());
+// CORS_ORIGIN: comma-separated allowlist of origins, e.g.
+// "https://dashboard.example.com,https://admin.example.com". Unset or "*"
+// (the default) keeps today's open-to-any-origin behavior.
+const corsOrigin = process.env["CORS_ORIGIN"]?.trim();
+const corsOptions =
+  !corsOrigin || corsOrigin === "*"
+    ? undefined
+    : { origin: corsOrigin.split(",").map((o) => o.trim()).filter(Boolean) };
+app.use(cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 

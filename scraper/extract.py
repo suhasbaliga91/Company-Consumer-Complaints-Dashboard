@@ -23,6 +23,7 @@ full list.  Quick start:
 """
 
 import argparse
+import importlib
 import json
 import os
 import re
@@ -36,6 +37,10 @@ import requests as http
 import pgdb
 from judgements import clean_html
 import llm
+
+# Classification taxonomy — set TAXONOMY_MODULE in the environment to swap
+# to a different industry's issue/part categories and prompt examples.
+_taxonomy = importlib.import_module(os.environ.get("TAXONOMY_MODULE", "taxonomy"))
 
 # ------------------------------------------------------------------
 # Configuration
@@ -82,27 +87,21 @@ def _add_tokens(model: str, in_tok: int, out_tok: int) -> None:
         _run_cost_usd += call_cost
 
 # ------------------------------------------------------------------
-# Allowed enum values
+# Allowed enum values — sourced from the taxonomy module (see TAXONOMY_MODULE
+# above). Exposed here as module attributes so validate_enums() below, and
+# callers/tests that reference extract.VALID_*, keep working unchanged.
 # ------------------------------------------------------------------
 
-VALID_ISSUE_TYPES = {
-    "Vehicle Defect", "Service Deficiency", "Misleading Advertisement",
-    "Unfair Trade Practice", "Extended Warranty / AMC",
-    "Finance / Insurance", "Delivery / Documentation", "Other",
-}
-VALID_OUTCOME_VALUES = {
-    "Allowed", "Dismissed", "Partially Allowed", "Remanded",
-    "Settled / Withdrawn", "Ex-parte", "Other",
-}
-VALID_SALES_OR_SERVICE = {"Sales", "Service"}
-VALID_PART_CATEGORIES  = {
-    "Engine / Transmission", "Electrical / AC", "Body / Paint",
-    "Infotainment", "Suspension / Brakes", "Fuel System", "Other",
-}
+VALID_ISSUE_TYPES      = _taxonomy.VALID_ISSUE_TYPES
+VALID_OUTCOME_VALUES    = _taxonomy.VALID_OUTCOME_VALUES
+VALID_SALES_OR_SERVICE  = _taxonomy.VALID_SALES_OR_SERVICE
+VALID_PART_CATEGORIES   = _taxonomy.VALID_PART_CATEGORIES
 
 # ------------------------------------------------------------------
 # Prompt
 # ------------------------------------------------------------------
+
+_fd = _taxonomy.FIELD_DESCRIPTIONS
 
 SYSTEM_INSTRUCTION = f"""You are a legal analyst reviewing Indian consumer-court judgments involving {COMPANY_NAME}. Extract structured fields from the provided judgment text and return ONLY a valid JSON object.
 
@@ -118,11 +117,11 @@ FIELDS TO EXTRACT:
 - issue_type (string|null): primary complaint category from the allowed list, null if genuinely unclear after reading the full text
 - sales_or_service (string|null): "Sales" for purchase/delivery issues; "Service" for post-sale repair/maintenance; null if genuinely unclear
 - warranty_related (boolean|null): true if warranty or AMC is central to the complaint
-- product_model (string|null): specific vehicle model (e.g. "ExampleCo Electra EV", "ExampleCo Compact"); null if not mentioned
-- is_ev (boolean|null): true if vehicle is electric; null if not mentioned
-- part_involved (string|null): specific part that failed (e.g. "Air Conditioner", "Engine", "Battery"); null if not mentioned
+- product_model (string|null): {_fd["product_model"]}
+- is_ev (boolean|null): {_fd["is_ev"]}
+- part_involved (string|null): {_fd["part_involved"]}
 - part_category (string|null): broader category from allowed list; null if not applicable
-- dealership (string|null): dealer/service-centre name, normalised without legal suffixes; null if not identifiable
+- dealership (string|null): {_fd["dealership"]}
 - outcome (string|null): final outcome from allowed list; null if genuinely unclear
 - claim_amount (number|null): amount claimed by complainant in INR, plain number; null if not mentioned
 - amount_awarded (number|null): amount directed to be paid in INR, plain number; null if no award
@@ -130,17 +129,7 @@ FIELDS TO EXTRACT:
 - confidence (number): your confidence 0.0–1.0 that the extracted fields are correct; set 0.7+ when you can read and understand the full text, even in a regional language
 - source_snippet (string|null): verbatim excerpt (max 200 chars) in the original language supporting the key finding
 
-EXAMPLE 1 — English:
-Input: "The complainant purchased an ExampleCo Electra EV from XYZ Motors for Rs.15,00,000. Battery failed within 3 months. Commission allowed the complaint and directed OP to refund Rs.8,50,000 with interest."
-Output: {{"issue_type":"Vehicle Defect","sales_or_service":"Sales","warranty_related":true,"product_model":"ExampleCo Electra EV","is_ev":true,"part_involved":"Battery","part_category":"Electrical / AC","dealership":"XYZ Motors","outcome":"Partially Allowed","claim_amount":1500000,"amount_awarded":850000,"grounds_taken":["Defective battery within warranty","Failure to repair"],"confidence":0.92,"source_snippet":"directed OP to refund Rs.8,50,000 with interest"}}
-
-EXAMPLE 2 — Hindi:
-Input: "परिवादी ने एक्मे कॉम्पैक्ट कार खरीदी जिसमें इंजन में दोष था। राम मोटर्स ने मरम्मत से इनकार किया। जिला आयोग ने परिवाद स्वीकार करते हुए विरोधी पक्ष को रु. 45,000/- क्षतिपूर्ति एवं रु. 5,000/- वाद व्यय अदा करने का आदेश दिया।"
-Output: {{"issue_type":"Vehicle Defect","sales_or_service":"Sales","warranty_related":false,"product_model":"ExampleCo Compact","is_ev":false,"part_involved":"Engine","part_category":"Engine / Transmission","dealership":"Ram Motors","outcome":"Allowed","claim_amount":null,"amount_awarded":50000,"grounds_taken":["Engine defect","Refusal to repair"],"confidence":0.88,"source_snippet":"विरोधी पक्ष को रु. 45,000/- क्षतिपूर्ति एवं रु. 5,000/- वाद व्यय"}}
-
-EXAMPLE 3 — Marathi:
-Input: "तक्रारदाराने एक्मे मोटर्सची सेडान कार खरेदी केली. वाहनाच्या ए.सी. मध्ये सातत्याने बिघाड येत होता. अधिकृत सेवा केंद्राने दुरुस्ती केली नाही. मंचाने तक्रार अंशतः मान्य करून विरुद्ध पक्षाला रु.30,000/- देण्याचा आदेश केला."
-Output: {{"issue_type":"Service Deficiency","sales_or_service":"Service","warranty_related":true,"product_model":"ExampleCo Sedan","is_ev":false,"part_involved":"Air Conditioner","part_category":"Electrical / AC","dealership":null,"outcome":"Partially Allowed","claim_amount":null,"amount_awarded":30000,"grounds_taken":["Recurring AC defect","Failure of authorized service centre to repair"],"confidence":0.85,"source_snippet":"रु.30,000/- देण्याचा आदेश केला"}}
+{_taxonomy.FEW_SHOT_EXAMPLES}
 
 Return ONLY a JSON object. No markdown fences. No commentary."""
 
@@ -557,7 +546,10 @@ def _invalidate_api_cache() -> None:
     if not secret:
         print("[extract] CACHE_SECRET not set — skipping API cache invalidation")
         return
-    api_base = os.environ.get("API_SERVER_URL", "http://localhost:8080")
+    # API_BASE_URL is canonical (matches refresh.py/.env.example); API_SERVER_URL
+    # is accepted as a legacy alias for backward compatibility.
+    api_base = (os.environ.get("API_BASE_URL") or os.environ.get("API_SERVER_URL")
+                or "http://localhost:8080")
     url = f"{api_base}/api/cache/invalidate"
     try:
         resp = http.post(url, headers={"x-cache-secret": secret}, timeout=10)

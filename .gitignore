@@ -59,6 +59,9 @@ Thumbs.db
 *.db
 scraper/eval_results.json
 
+# LLM-drafted taxonomy bootstrap output (per-deployment, reviewed before commit)
+scraper/taxonomy_generated.py
+
 # JSONL logs (token usage, etc.)
 scraper/*.jsonl
 

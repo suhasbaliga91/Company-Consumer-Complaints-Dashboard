@@ -31,19 +31,50 @@ python3 main.py
 ## Scope knobs (shell env vars)
 - `OPPOSITE_PARTY`  — search term used to query the registry (e.g. `ACME MOTORS`). Also used as the default for `COMPANY_NAME` when that is not set separately.
 - `COMPANY_NAME`  — human-readable company name injected into the LLM extraction prompt (e.g. `Acme Motors`). Set this to match your target company so the model knows whose cases it is analysing.
-- `RESPONDENT_ONLY` `1` = only cases filed against them (default) / `0` = either side
-- `YEAR_FROM` / `YEAR_TO`  (default `2016` / `2026`)
+- `RESPONDENT_ONLY` `1` = only cases filed against them / `0` = either side (default)
+- `YEAR_FROM` / `YEAR_TO`  (default `2015` / `2026`)
 - `RESTRICT_STATE_CODES`  blank = all India; `10` = Bihar; `10,27` = Bihar+Maharashtra
+
+## Taxonomy (classification categories)
+
+`taxonomy.py` controls what the LLM extraction pipeline is allowed to classify
+cases into — issue types, part/component categories, and the field
+descriptions and few-shot examples baked into the extraction prompt. It ships
+with an **automotive** taxonomy (Vehicle Defect, Engine/Transmission, EV
+flag, dealership, etc.) since that's the industry this pipeline was originally
+built for.
+
+For a non-automotive company, don't hand-edit `taxonomy.py` — instead bootstrap
+one from your own data:
+
+```bash
+# After harvesting at least a small sample of cases (main.py + judgements.py):
+python3 generate_taxonomy.py --out taxonomy_generated.py
+
+# Review the draft — it's LLM-proposed, not auto-applied — then activate it:
+export TAXONOMY_MODULE=taxonomy_generated
+python3 extract.py
+```
+
+`generate_taxonomy.py` samples already-harvested judgment text (or falls back
+to just `COMPANY_NAME` if nothing's harvested yet) and asks the LLM
+provider/model you already have configured (see LLM Configuration below) to
+propose an industry-appropriate `VALID_ISSUE_TYPES`/`VALID_PART_CATEGORIES`
+list and matching field descriptions/examples — including omitting
+`part_category` entirely for industries where "which part failed" isn't a
+meaningful concept (banking, insurance, pure services).
+
+- `TAXONOMY_MODULE` — python module name for the taxonomy config (default: `taxonomy`), same pattern as `COMPANY_MODULE` above.
 
 ## Pipeline sync env vars (`refresh.py` + API server)
 
 These vars wire the scraper → LLM extraction → API cache pipeline together so
 the dashboard shows fresh data after each morning run.
 
-### `refresh.py` (scraper side)
+### Scraper side (`refresh.py` and `extract.py`)
 | Variable | Default | Purpose |
 |---|---|---|
-| `API_BASE_URL` | _(none)_ | Base URL of the API server, e.g. `https://your-api-server.example.com`. If unset, cache invalidation is skipped. |
+| `API_BASE_URL` | `http://localhost:8080` in `extract.py`, _(none)_ in `refresh.py` | Base URL of the API server, e.g. `https://your-api-server.example.com`. If unset in `refresh.py`, cache invalidation is skipped. (`API_SERVER_URL` is accepted as a legacy alias.) |
 | `CACHE_SECRET` | _(none)_ | Shared secret sent in the `x-cache-secret` header when pinging `/api/cache/invalidate`. Must match the API server's `CACHE_SECRET`. If unset, cache invalidation is skipped. |
 
 ### API server side
@@ -51,6 +82,9 @@ the dashboard shows fresh data after each morning run.
 |---|---|---|
 | `CACHE_SECRET` | _(none)_ | Required on the API server to authorise `POST /api/cache/invalidate`. Requests with a missing or wrong header get a `401`. |
 | `CACHE_TTL_MS` | `43200000` (12 h) | Safety-net TTL in milliseconds. The cache auto-refreshes on the next request if the pipeline's invalidation ping is ever missed. |
+| `CORS_ORIGIN` | `*` (any origin) | Comma-separated allowlist of origins allowed to call the API, e.g. `https://dashboard.example.com`. Leave unset for the default open-CORS behavior. |
+| `PORT` | _(required)_ | Port the API server listens on. |
+| `DATABASE_URL` | _(required)_ | PostgreSQL connection string. |
 
 ## Judgements pipeline
 
@@ -90,15 +124,22 @@ python3 extract.py
 
 ### Incremental updates
 
-`refresh.py` automatically calls `judgements.py` scoped to the last two calendar
-years as part of its daily pipeline (after the main case harvest, before LLM
-extraction). No manual intervention needed for day-to-day freshness.
+`refresh.py` automatically calls `judgements.py` scoped to the trailing
+`REFRESH_LOOKBACK_YEARS` years (default 2) as part of its scheduled pipeline
+(after the main case harvest, before LLM extraction). No manual intervention
+needed for day-to-day freshness.
+
+By default `refresh.py`'s persistent scheduler (`python3 refresh.py`, no
+`--now`) runs Mon-Sat at 06:00 IST. All of that is configurable:
+- `REFRESH_HOUR_IST` / `REFRESH_MINUTE_IST` — run time (default `6` / `0`)
+- `REFRESH_DAYS` — comma-separated weekdays to run on, `0`=Mon .. `6`=Sun (default `0,1,2,3,4,5` = Mon-Sat)
+- `REFRESH_LOOKBACK_YEARS` — trailing years re-scraped each run (default `2`)
+- `EXTRACT_CONCURRENCY` — parallel LLM calls during the extraction step (default `5`)
 
 ### Scope knobs
 
 Same env vars as `main.py` are honoured:
 - `YEAR_FROM` / `YEAR_TO` — disposal-year window (default from `company.py`)
-- `DB_PATH` — override the SQLite file path
 - `OPPOSITE_PARTY` / `PARTY_NAME` — company name sent to the API
 - `COMPANY_MODULE` — swap `company.py` for a different target company
 

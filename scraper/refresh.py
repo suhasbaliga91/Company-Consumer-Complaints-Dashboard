@@ -1,14 +1,14 @@
 """
-refresh.py — incremental update + Mon-Sat 08:00 IST cron scheduler.
+refresh.py — incremental update + cron scheduler (default: Mon-Sat 06:00 IST).
 
 Incremental logic
 -----------------
-  Deletes search_progress rows for the two most recent years so the harvester
-  re-fetches them, picking up any new cases filed since the last full run.
-  Existing cases in the `cases` table are upserted — no duplicates.
+  Deletes search_progress rows for the trailing REFRESH_LOOKBACK_YEARS years so
+  the harvester re-fetches them, picking up any new cases filed since the last
+  full run. Existing cases in the `cases` table are upserted — no duplicates.
 
-Pipeline sequence (each morning)
----------------------------------
+Pipeline sequence (each run)
+-----------------------------
   1. Scrape new / updated cases          (main.py)
   2. LLM-extract unprocessed judgments   (extract.py)
   3. Invalidate API server cache         (POST /api/cache/invalidate)
@@ -20,6 +20,16 @@ Usage
 
   # Start the scheduler (runs forever, suitable for a persistent workflow):
   python3 refresh.py
+
+Scheduler env vars (all optional)
+----------------------------------
+  REFRESH_HOUR_IST      hour (0-23) to run at, IST                (default: 6)
+  REFRESH_MINUTE_IST    minute (0-59) to run at, IST               (default: 0)
+  REFRESH_DAYS          comma-separated weekdays to run on, Python's
+                         datetime.weekday() convention (0=Mon..6=Sun)
+                                                                     (default: "0,1,2,3,4,5" = Mon-Sat)
+  REFRESH_LOOKBACK_YEARS  trailing years to re-scrape each run       (default: 2)
+  EXTRACT_CONCURRENCY     parallel LLM calls during the extraction step (default: 5)
 """
 
 import argparse, datetime, importlib, os, time
@@ -35,7 +45,11 @@ _mod_name = os.environ.get("COMPANY_MODULE", "company")
 company   = importlib.import_module(_mod_name)
 
 IST            = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
-LOOKBACK_YEARS = 2   # how many trailing years to re-scrape on each refresh
+LOOKBACK_YEARS = int(os.environ.get("REFRESH_LOOKBACK_YEARS", "2"))
+RUN_HOUR       = int(os.environ.get("REFRESH_HOUR_IST", "6"))
+RUN_MINUTE     = int(os.environ.get("REFRESH_MINUTE_IST", "0"))
+RUN_DAYS       = {int(d) for d in os.environ.get("REFRESH_DAYS", "0,1,2,3,4,5").split(",") if d.strip() != ""}
+EXTRACT_CONCURRENCY = int(os.environ.get("EXTRACT_CONCURRENCY", "5"))
 
 
 def _clear_recent_progress(year_from: int) -> int:
@@ -78,7 +92,7 @@ def _run_extraction() -> None:
             force=False,
             offset=0,
             limit=None,
-            concurrency=5,
+            concurrency=EXTRACT_CONCURRENCY,
         )
         print(f"[{datetime.datetime.now(IST).strftime('%H:%M IST')}] "
               "LLM extraction complete.")
@@ -182,15 +196,15 @@ def do_refresh():
 
 
 def _next_run_str(now: datetime.datetime) -> str:
-    target = now.replace(hour=6, minute=0, second=0, microsecond=0)
-    if now >= target or now.weekday() == 6:
+    target = now.replace(hour=RUN_HOUR, minute=RUN_MINUTE, second=0, microsecond=0)
+    if now >= target or now.weekday() not in RUN_DAYS:
         target += datetime.timedelta(days=1)
-        while target.weekday() == 6:
+        while target.weekday() not in RUN_DAYS:
             target += datetime.timedelta(days=1)
     delta  = target - now
     h, rem = divmod(int(delta.total_seconds()), 3600)
     m      = rem // 60
-    return f"{target.strftime('%a %Y-%m-%d 06:00 IST')} (in {h}h {m}m)"
+    return f"{target.strftime('%a %Y-%m-%d ' + f'{RUN_HOUR:02d}:{RUN_MINUTE:02d}' + ' IST')} (in {h}h {m}m)"
 
 
 def main():
@@ -204,7 +218,8 @@ def main():
         return
 
     print(f"Scheduler started ({company.PARTY_NAME}).")
-    print(f"Will refresh Mon-Sat at 06:00 IST (lookback: {LOOKBACK_YEARS} years).")
+    print(f"Will refresh on weekdays {sorted(RUN_DAYS)} (0=Mon..6=Sun) at "
+          f"{RUN_HOUR:02d}:{RUN_MINUTE:02d} IST (lookback: {LOOKBACK_YEARS} years).")
     print(f"Next run: {_next_run_str(datetime.datetime.now(IST))}\n")
 
     last_run_date = None
@@ -213,14 +228,14 @@ def main():
         now   = datetime.datetime.now(IST)
         today = now.date()
 
-        is_working_day = now.weekday() <= 5
-        is_run_window  = now.hour == 6 and now.minute < 5
+        is_scheduled_day = now.weekday() in RUN_DAYS
+        is_run_window     = now.hour == RUN_HOUR and RUN_MINUTE <= now.minute < RUN_MINUTE + 5
 
-        if is_working_day and is_run_window and last_run_date != today:
+        if is_scheduled_day and is_run_window and last_run_date != today:
             do_refresh()
             last_run_date = today
 
-        if now.hour == 5 and now.minute >= 50:
+        if now.hour == (RUN_HOUR - 1) % 24 and now.minute >= 50:
             time.sleep(10)
         else:
             time.sleep(60)

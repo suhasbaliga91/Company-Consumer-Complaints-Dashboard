@@ -25,6 +25,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { useState } from 'react';
+import { APP_TITLE, APP_TITLE_SHORT } from '@/lib/branding';
 
 export function Dashboard() {
   const { scope, setScope, lens, setLens, region, setRegion, view, setView } = useDashboard();
@@ -54,8 +55,8 @@ export function Dashboard() {
           <div className="flex items-center gap-2 md:gap-4 min-w-0">
             <div className="flex items-center gap-2 text-primary flex-shrink-0">
               <Scale className="w-5 h-5" />
-              <span className="font-semibold text-sm text-primary hidden sm:block">Consumer Cases Monitor</span>
-              <span className="font-semibold text-sm text-primary sm:hidden">Case Monitor</span>
+              <span className="font-semibold text-sm text-primary hidden sm:block">{APP_TITLE}</span>
+              <span className="font-semibold text-sm text-primary sm:hidden">{APP_TITLE_SHORT}</span>
             </div>
             <div className="h-4 w-px bg-border mx-1 hidden md:block" />
             <Tabs value={scope} onValueChange={(v) => setScope(v as Scope)} className="w-[180px] md:w-[200px]">

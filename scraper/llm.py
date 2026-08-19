@@ -30,10 +30,17 @@ OpenAI credentials
 Backward-compatible aliases (still honoured, but canonical names above are preferred)
   EXTRACT_MODEL          → LLM_PRIMARY_MODEL
   OPENAI_EXTRACT_MODEL   → LLM_FALLBACK_MODEL
+
+Cost tracking
+  LLM_PRICING_JSON       JSON object of {"model-name": [input_rate, output_rate]}
+                         (USD per 1M tokens) merged over the built-in pricing table.
+                         Set this when using a model not in that table, so
+                         TOKEN_DAILY_CAP_USD enforcement in extract.py stays accurate.
 ─────────────────────────────────────────────────────────────────────
 """
 
 import datetime
+import json
 import os
 import time
 from email.utils import parsedate_to_datetime
@@ -66,10 +73,38 @@ _PRICING: dict[str, tuple[float, float]] = {
 }
 _DEFAULT_PRICING: tuple[float, float] = (0.10, 0.40)
 
+# LLM_PRIMARY_MODEL/LLM_FALLBACK_MODEL can be set to any model name, including
+# ones not in _PRICING above (a newer model, a fine-tune, an Azure deployment
+# name). Set LLM_PRICING_JSON to add/override entries without editing code —
+# a JSON object of {"model-name": [input_rate, output_rate]} in USD per 1M
+# tokens, e.g.: LLM_PRICING_JSON='{"gemini-3-flash": [0.20, 1.00]}'
+_env_pricing_raw = _env("LLM_PRICING_JSON")
+if _env_pricing_raw:
+    try:
+        _PRICING = {**_PRICING, **{k: tuple(v) for k, v in json.loads(_env_pricing_raw).items()}}
+    except (json.JSONDecodeError, TypeError, ValueError) as _exc:
+        print(f"[llm] WARNING: LLM_PRICING_JSON is not valid JSON ({_exc}); ignoring it.")
+
+_warned_unpriced_models: set[str] = set()
+
 
 def get_pricing(model: str) -> tuple[float, float]:
-    """Return *(input_rate, output_rate)* in USD per 1M tokens for *model*."""
-    return _PRICING.get(model, _DEFAULT_PRICING)
+    """Return *(input_rate, output_rate)* in USD per 1M tokens for *model*.
+
+    Falls back to _DEFAULT_PRICING (flash-lite-tier rates) for any model not
+    in _PRICING/LLM_PRICING_JSON — this makes cost tracking silently wrong
+    for that model, so warn once per model rather than staying silent.
+    """
+    if model in _PRICING:
+        return _PRICING[model]
+    if model not in _warned_unpriced_models:
+        _warned_unpriced_models.add(model)
+        print(
+            f"[llm] WARNING: no pricing entry for model {model!r} — cost tracking will use "
+            f"default rates {_DEFAULT_PRICING} USD/1M tokens, which may be inaccurate. "
+            f"Set LLM_PRICING_JSON to add the correct rate for this model."
+        )
+    return _DEFAULT_PRICING
 
 
 # ──────────────────────────────────────────────────────────────────
